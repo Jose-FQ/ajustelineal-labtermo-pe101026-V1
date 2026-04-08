@@ -13,7 +13,7 @@ from matplotlib.ticker import FuncFormatter
 from scipy import stats
 
 APP_DIR = Path(__file__).resolve().parent
-UNAM_LOGO_PATH = APP_DIR / "Escudo-UNAM-escalable.svg.png"
+UNAM_LOGO_PATH = APP_DIR / "Escudo-UNAM-escalable.png"
 OWL_LOGO_PATH = APP_DIR / "Logo-Buho.png"
 
 ACKNOWLEDGEMENT = (
