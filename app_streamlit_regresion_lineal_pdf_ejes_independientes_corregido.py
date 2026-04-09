@@ -1,4 +1,3 @@
-
 import io
 import textwrap
 from datetime import datetime
@@ -13,7 +12,7 @@ from matplotlib.ticker import FuncFormatter
 from scipy import stats
 
 APP_DIR = Path(__file__).resolve().parent
-UNAM_LOGO_PATH = APP_DIR / "Escudo-UNAM-escalable.png"
+UNAM_LOGO_PATH = APP_DIR / "Escudo-UNAM-escalable.svg.png"
 OWL_LOGO_PATH = APP_DIR / "Logo-Buho.png"
 
 ACKNOWLEDGEMENT = (
@@ -28,6 +27,7 @@ ACKNOWLEDGEMENT = (
 # =========================
 
 st.set_page_config(page_title="Ajuste lineal con PDF", page_icon="📈", layout="wide")
+
 
 # =========================
 # Utilidades de interfaz
@@ -94,6 +94,9 @@ def format_number(value, mode: str = "Automático", sig_figs: int = 6) -> str:
     if value is None:
         return ""
 
+    if isinstance(value, str):
+        return value
+
     if isinstance(value, (int, np.integer)):
         return str(int(value))
 
@@ -119,6 +122,16 @@ def format_number(value, mode: str = "Automático", sig_figs: int = 6) -> str:
     if abs_v != 0 and (abs_v < 1e-3 or abs_v >= 1e4):
         return f"{value:.{sig_figs}e}"
     return f"{value:.{sig_figs}g}"
+
+
+def display_value(value, mode: str, sig_figs: int, na_text: str = "No aplica") -> str:
+    if value is None:
+        return na_text
+    if isinstance(value, float) and np.isnan(value):
+        return na_text
+    if isinstance(value, str):
+        return value
+    return format_number(value, mode, sig_figs)
 
 
 def make_tick_formatter(mode: str = "Automático", sig_figs: int = 6):
@@ -154,6 +167,15 @@ def format_xy_dataframe_for_display(
         )
 
     return formatted
+
+
+def model_description(stats_dict: dict, results_mode: str, results_sig_figs: int) -> str:
+    if stats_dict.get("intercept_fixed", False):
+        return (
+            "Intersección fija en "
+            f"{format_number(stats_dict['fixed_intercept_value'], results_mode, results_sig_figs)}"
+        )
+    return "Intersección libre"
 
 
 # =========================
@@ -272,7 +294,20 @@ def read_uploaded_file(uploaded_file) -> pd.DataFrame:
 # Cálculo estadístico
 # =========================
 
-def linear_regression_analysis(df: pd.DataFrame) -> dict:
+def safe_pearson_r(x: np.ndarray, y: np.ndarray) -> float:
+    if len(x) < 2:
+        return np.nan
+    if np.allclose(x, x[0]) or np.allclose(y, y[0]):
+        return np.nan
+    return float(np.corrcoef(x, y)[0, 1])
+
+
+
+def linear_regression_analysis(
+    df: pd.DataFrame,
+    intercept_mode: str = "libre",
+    fixed_intercept: float = 0.0,
+) -> dict:
     x = df["x"].to_numpy(dtype=float)
     y = df["y"].to_numpy(dtype=float)
     n = len(df)
@@ -282,6 +317,83 @@ def linear_regression_analysis(df: pd.DataFrame) -> dict:
             "Se requieren al menos 3 puntos para reportar estadísticos del ajuste "
             "con mayor sentido."
         )
+
+    y_mean = np.mean(y)
+    centered_sst = np.sum((y - y_mean) ** 2)
+    alpha = 0.05
+
+    if intercept_mode == "fija":
+        intercept = float(fixed_intercept)
+        sxx_fixed = np.sum(x ** 2)
+
+        if np.isclose(sxx_fixed, 0.0):
+            raise ValueError(
+                "No es posible estimar la pendiente con intersección fija porque "
+                "la suma de x² es cero."
+            )
+
+        slope = np.sum(x * (y - intercept)) / sxx_fixed
+        y_pred = intercept + slope * x
+        residuals = y - y_pred
+
+        dof = n - 1
+        sse = np.sum(residuals ** 2)
+        mse = sse / dof
+        rmse = np.sqrt(mse)
+
+        slope_stderr = np.sqrt(mse / sxx_fixed)
+        if np.isclose(slope_stderr, 0.0):
+            if np.isclose(slope, 0.0):
+                t_stat_slope = 0.0
+                p_value = 1.0
+            else:
+                t_stat_slope = np.inf
+                p_value = 0.0
+        else:
+            t_stat_slope = slope / slope_stderr
+            p_value = 2 * stats.t.sf(abs(t_stat_slope), dof)
+
+        t_crit = stats.t.ppf(1 - alpha / 2, dof)
+        slope_ci = (slope - t_crit * slope_stderr, slope + t_crit * slope_stderr)
+
+        if centered_sst > 0:
+            r2 = 1 - (sse / centered_sst)
+        else:
+            r2 = 1.0 if np.isclose(sse, 0.0) else np.nan
+
+        r_value = safe_pearson_r(x, y)
+        f_stat = t_stat_slope ** 2 if np.isfinite(t_stat_slope) else np.inf
+
+        return {
+            "n": n,
+            "x": x,
+            "y": y,
+            "slope": slope,
+            "intercept": intercept,
+            "r": r_value,
+            "r2": r2,
+            "p_value": p_value,
+            "slope_stderr": slope_stderr,
+            "intercept_stderr": None,
+            "slope_ci": slope_ci,
+            "intercept_ci": None,
+            "y_pred": y_pred,
+            "residuals": residuals,
+            "sse": sse,
+            "mse": mse,
+            "rmse": rmse,
+            "f_stat": f_stat,
+            "dof": dof,
+            "x_mean": np.mean(x),
+            "sxx": sxx_fixed,
+            "intercept_fixed": True,
+            "fixed_intercept_value": intercept,
+            "t_stat_slope": t_stat_slope,
+            "r2_note": (
+                "R² se calculó como 1 - SSE/SST usando SST centrada respecto a la media de Y. "
+                "Cuando se impone una intersección fija, R² puede tomar valores negativos."
+            ),
+        }
 
     if np.allclose(x, x[0]):
         raise ValueError(
@@ -294,7 +406,7 @@ def linear_regression_analysis(df: pd.DataFrame) -> dict:
     slope = result.slope
     intercept = result.intercept
     r_value = result.rvalue
-    r2 = r_value**2
+    r2 = r_value ** 2
     p_value = result.pvalue
     slope_stderr = result.stderr
     intercept_stderr = result.intercept_stderr
@@ -303,19 +415,16 @@ def linear_regression_analysis(df: pd.DataFrame) -> dict:
     residuals = y - y_pred
 
     dof = n - 2
-    sse = np.sum(residuals**2)
+    sse = np.sum(residuals ** 2)
     mse = sse / dof
     rmse = np.sqrt(mse)
 
     x_mean = np.mean(x)
     sxx = np.sum((x - x_mean) ** 2)
 
-    y_mean = np.mean(y)
     ss_reg = np.sum((y_pred - y_mean) ** 2)
-
     f_stat = (ss_reg / 1) / (sse / dof) if sse > 0 else np.inf
 
-    alpha = 0.05
     t_crit = stats.t.ppf(1 - alpha / 2, dof)
 
     slope_ci = (slope - t_crit * slope_stderr, slope + t_crit * slope_stderr)
@@ -346,6 +455,10 @@ def linear_regression_analysis(df: pd.DataFrame) -> dict:
         "dof": dof,
         "x_mean": x_mean,
         "sxx": sxx,
+        "intercept_fixed": False,
+        "fixed_intercept_value": None,
+        "t_stat_slope": result.slope / result.stderr if result.stderr != 0 else np.inf,
+        "r2_note": "R² = r² para el ajuste lineal con intersección libre.",
     }
 
 
@@ -370,6 +483,7 @@ def build_main_figure(
     y_axis_sig_figs,
     results_mode,
     results_sig_figs,
+    intercept_fixed=False,
 ):
     fig, ax = plt.subplots(figsize=(8, 5.5))
     order = np.argsort(x)
@@ -388,18 +502,21 @@ def build_main_figure(
     ax.xaxis.set_major_formatter(make_tick_formatter(x_axis_mode, x_axis_sig_figs))
     ax.yaxis.set_major_formatter(make_tick_formatter(y_axis_mode, y_axis_sig_figs))
 
-    eq = (
+    eq_lines = [
         f"{clean_var_name(y_name, 'Y')} = "
         f"{format_number(intercept, results_mode, results_sig_figs)} + "
         f"{format_number(slope, results_mode, results_sig_figs)}·"
-        f"{clean_var_name(x_name, 'X')}\n"
-        f"R² = {format_number(r2, 'Decimal', 6)}"
-    )
+        f"{clean_var_name(x_name, 'X')}",
+        f"R² = {format_number(r2, 'Decimal', 6)}",
+    ]
+
+    if intercept_fixed:
+        eq_lines.append("Intersección fija")
 
     ax.text(
         0.03,
         0.97,
-        eq,
+        "\n".join(eq_lines),
         transform=ax.transAxes,
         va="top",
         bbox=dict(boxstyle="round", alpha=0.15),
@@ -407,6 +524,7 @@ def build_main_figure(
 
     fig.tight_layout()
     return fig
+
 
 
 def build_residual_figure(y_pred, residuals, y_axis_mode, y_axis_sig_figs):
@@ -456,49 +574,88 @@ def build_interpretation_markdown(
             "La pendiente no es estadísticamente distinta de cero al 95% de confianza."
         )
 
-    if stats_dict["r2"] >= 0.90:
-        r2_text = (
-            f"El modelo lineal explica una proporción muy alta de la variabilidad de {y_name}."
-        )
-    elif stats_dict["r2"] >= 0.70:
-        r2_text = (
-            f"El modelo lineal explica una proporción alta de la variabilidad de {y_name}."
-        )
-    elif stats_dict["r2"] >= 0.50:
-        r2_text = (
-            f"El modelo lineal explica una proporción moderada de la variabilidad de {y_name}."
-        )
+    r2_value = stats_dict["r2"]
+    if not np.isnan(r2_value):
+        if r2_value >= 0.90:
+            r2_text = (
+                f"El modelo lineal explica una proporción muy alta de la variabilidad de {y_name}."
+            )
+        elif r2_value >= 0.70:
+            r2_text = (
+                f"El modelo lineal explica una proporción alta de la variabilidad de {y_name}."
+            )
+        elif r2_value >= 0.50:
+            r2_text = (
+                f"El modelo lineal explica una proporción moderada de la variabilidad de {y_name}."
+            )
+        elif r2_value >= 0.0:
+            r2_text = (
+                f"El modelo lineal explica una proporción limitada de la variabilidad de {y_name}."
+            )
+        else:
+            r2_text = (
+                "El valor de R² es negativo. Esto puede ocurrir cuando se impone una "
+                "intersección fija y el modelo ajusta peor que usar simplemente la media de Y."
+            )
     else:
-        r2_text = (
-            f"El modelo lineal explica una proporción limitada de la variabilidad de {y_name}."
-        )
+        r2_text = "No fue posible calcular un R² interpretable con estos datos."
+
+    if stats_dict.get("intercept_fixed", False):
+        intercept_section = f"""
+**Intersección (b0)**  
+La intersección no fue estimada a partir de los datos: se fijó manualmente en **{format_number(stats_dict['fixed_intercept_value'], results_mode, results_sig_figs)}**.  
+Unidades de la intersección: **{intercept_unit_text}**  
+Por lo tanto, no se reportan error estándar ni intervalo de confianza para la intersección.
+"""
+        uncertainty_section = f"""
+**Error estándar de la pendiente**  
+EE(b1) = **{format_number(stats_dict["slope_stderr"], results_mode, results_sig_figs)}**
+
+**Intervalo de confianza al 95% para la pendiente**  
+IC95% pendiente: **[{format_number(stats_dict["slope_ci"][0], results_mode, results_sig_figs)}, {format_number(stats_dict["slope_ci"][1], results_mode, results_sig_figs)}]**
+
+**Error estándar e intervalo de confianza de la intersección**  
+No aplica, porque la intersección fue fijada por el usuario y no fue estimada por regresión.
+"""
+    else:
+        intercept_section = f"""
+**Intersección (b0)**  
+Representa el valor estimado de **{y_name}** cuando **{x_name} = 0**.  
+Valor estimado: **{format_number(stats_dict["intercept"], results_mode, results_sig_figs)}**  
+Unidades de la intersección: **{intercept_unit_text}**  
+Esta interpretación solo tiene sentido físico si el valor **{x_name} = 0** es accesible y relevante en el sistema experimental.
+"""
+        uncertainty_section = f"""
+**Error estándar de la pendiente e intersección**  
+Miden la incertidumbre estadística asociada a cada parámetro del ajuste.
+- EE(b1): **{format_number(stats_dict["slope_stderr"], results_mode, results_sig_figs)}**
+- EE(b0): **{format_number(stats_dict["intercept_stderr"], results_mode, results_sig_figs)}**
+
+**Intervalos de confianza al 95%**  
+Indican el intervalo plausible donde puede encontrarse el valor real del parámetro:
+- IC95% pendiente: **[{format_number(stats_dict["slope_ci"][0], results_mode, results_sig_figs)}, {format_number(stats_dict["slope_ci"][1], results_mode, results_sig_figs)}]**
+- IC95% intersección: **[{format_number(stats_dict["intercept_ci"][0], results_mode, results_sig_figs)}, {format_number(stats_dict["intercept_ci"][1], results_mode, results_sig_figs)}]**
+"""
 
     return f"""
 **Modelo ajustado**  
 {y_name} = b0 + b1·{x_name}
+
+**Configuración del modelo**  
+{model_description(stats_dict, results_mode, results_sig_figs)}
 
 **Pendiente (b1)**  
 Representa el cambio promedio de **{y_name}** cuando **{x_name}** aumenta una unidad.  
 Valor estimado: **{format_number(stats_dict["slope"], results_mode, results_sig_figs)}**  
 Unidades de la pendiente: **{slope_unit_text}**
 
-**Intersección (b0)**  
-Representa el valor estimado de **{y_name}** cuando **{x_name} = 0**.  
-Valor estimado: **{format_number(stats_dict["intercept"], results_mode, results_sig_figs)}**  
-Unidades de la intersección: **{intercept_unit_text}**  
-Esta interpretación solo tiene sentido físico si el valor **{x_name} = 0** es accesible y relevante en el sistema experimental.
-
-**Error estándar de la pendiente e intersección**  
-Miden la incertidumbre estadística asociada a cada parámetro del ajuste.
-
-**Intervalos de confianza al 95%**  
-Indican el intervalo plausible donde puede encontrarse el valor real del parámetro:
-- IC95% pendiente: **[{format_number(stats_dict["slope_ci"][0], results_mode, results_sig_figs)}, {format_number(stats_dict["slope_ci"][1], results_mode, results_sig_figs)}]**
-- IC95% intersección: **[{format_number(stats_dict["intercept_ci"][0], results_mode, results_sig_figs)}, {format_number(stats_dict["intercept_ci"][1], results_mode, results_sig_figs)}]**
+{intercept_section}
+{uncertainty_section}
 
 **Coeficiente de determinación R²**  
 Valor: **{format_number(stats_dict["r2"], "Decimal", 6)}**  
-{r2_text}
+{r2_text}  
+{stats_dict['r2_note']}
 
 **RMSE**  
 Valor: **{format_number(stats_dict["rmse"], results_mode, results_sig_figs)}**  
@@ -507,7 +664,7 @@ Representa el tamaño típico del error del ajuste en unidades de **{y_name}**.
 **p(pendiente)**  
 Valor: **{format_number(stats_dict["p_value"], "Científica", results_sig_figs)}**  
 {significance_text}  
-El valor p(pendiente) sirve para evaluar si hay evidencia estadística de que la pendiente verdadera es distinta de cero.
+El valor p(pendiente) sirve para evaluar si hay evidencia estadística de que la pendiente verdadera es distinta de cero, bajo la configuración elegida para la intersección.
 
 **Residuales**  
 Son las diferencias entre los valores experimentales y los valores calculados por el modelo.  
@@ -515,6 +672,7 @@ Se recomienda revisar la gráfica de residuales para detectar curvatura, heteroc
 
 *Heterocedasticidad: la dispersión de errores cambia con x o con y.*
 """
+
 
 
 def analysis_text(
@@ -538,20 +696,48 @@ def analysis_text(
             "La pendiente no resulta estadísticamente significativa a un nivel de confianza del 95%."
         )
 
-    if stats_dict["r2"] >= 0.90:
-        r2_text = f"El ajuste lineal explica una proporción muy alta de la variabilidad de {y_name}."
-    elif stats_dict["r2"] >= 0.70:
-        r2_text = f"El ajuste lineal explica una proporción alta de la variabilidad de {y_name}."
-    elif stats_dict["r2"] >= 0.50:
-        r2_text = f"El ajuste lineal explica una proporción moderada de la variabilidad de {y_name}."
+    r2_value = stats_dict["r2"]
+    if not np.isnan(r2_value):
+        if r2_value >= 0.90:
+            r2_text = f"El ajuste lineal explica una proporción muy alta de la variabilidad de {y_name}."
+        elif r2_value >= 0.70:
+            r2_text = f"El ajuste lineal explica una proporción alta de la variabilidad de {y_name}."
+        elif r2_value >= 0.50:
+            r2_text = f"El ajuste lineal explica una proporción moderada de la variabilidad de {y_name}."
+        elif r2_value >= 0.0:
+            r2_text = f"El ajuste lineal explica una proporción limitada de la variabilidad de {y_name}."
+        else:
+            r2_text = (
+                "R² es negativo; esto puede ocurrir cuando la intersección se fija y el modelo "
+                "ajusta peor que la media de Y."
+            )
     else:
-        r2_text = f"El ajuste lineal explica una proporción limitada de la variabilidad de {y_name}."
+        r2_text = "No fue posible calcular un R² interpretable con estos datos."
+
+    if stats_dict.get("intercept_fixed", False):
+        intercept_interpretation = (
+            "La intersección no se estimó: se fijó manualmente por el usuario. "
+            "No aplica reportar su error estándar ni su intervalo de confianza."
+        )
+        intercept_stderr_text = "No aplica (valor fijo)"
+        intercept_ci_text = "No aplica (valor fijo)"
+    else:
+        intercept_interpretation = (
+            f"La intersección representa el valor estimado de {y_name} cuando {x_name} = 0."
+        )
+        intercept_stderr_text = format_number(
+            stats_dict["intercept_stderr"], results_mode, results_sig_figs
+        )
+        intercept_ci_text = (
+            f"[{format_number(stats_dict['intercept_ci'][0], results_mode, results_sig_figs)}, "
+            f"{format_number(stats_dict['intercept_ci'][1], results_mode, results_sig_figs)}]"
+        )
 
     interpretation_lines = [
         significance_text,
         r2_text,
         f"La pendiente representa el cambio promedio de {y_name} por cada unidad de {x_name}.",
-        f"La intersección representa el valor estimado de {y_name} cuando {x_name} = 0.",
+        intercept_interpretation,
         "Revise la gráfica de residuales para detectar curvatura, heterocedasticidad o valores atípicos.",
     ]
 
@@ -566,6 +752,9 @@ REPORTE DE AJUSTE LINEAL
 Modelo:
     {y_name} = b0 + b1*{x_name}
 
+Configuración del modelo:
+    {model_description(stats_dict, results_mode, results_sig_figs)}
+
 Etiquetas de variables:
     X = {axis_label(x_name, x_unit)}
     Y = {axis_label(y_name, y_unit)}
@@ -576,30 +765,34 @@ Parámetros estimados:
 
 Interpretación física básica:
     La pendiente tiene unidades de {slope_units(x_unit, y_unit)}.
-    La intersección tiene unidades de {clean_unit(y_unit) if clean_unit(y_unit) else "Y"}.
+    La intersección tiene unidades de {clean_unit(y_unit) if clean_unit(y_unit) else 'Y'}.
 
 Errores estándar:
-    EE(b0) = {format_number(stats_dict["intercept_stderr"], results_mode, results_sig_figs)}
+    EE(b0) = {intercept_stderr_text}
     EE(b1) = {format_number(stats_dict["slope_stderr"], results_mode, results_sig_figs)}
 
 Intervalos de confianza al 95%:
-    IC95%(b0) = [{format_number(stats_dict["intercept_ci"][0], results_mode, results_sig_figs)}, {format_number(stats_dict["intercept_ci"][1], results_mode, results_sig_figs)}]
+    IC95%(b0) = {intercept_ci_text}
     IC95%(b1) = [{format_number(stats_dict["slope_ci"][0], results_mode, results_sig_figs)}, {format_number(stats_dict["slope_ci"][1], results_mode, results_sig_figs)}]
 
 Pruebas y bondad de ajuste:
     n             = {stats_dict["n"]}
     gl            = {stats_dict["dof"]}
-    r             = {format_number(stats_dict["r"], results_mode, results_sig_figs)}
-    R²            = {format_number(stats_dict["r2"], "Decimal", 6)}
-    p(pendiente)  = {format_number(stats_dict["p_value"], "Científica", results_sig_figs)}
+    r             = {display_value(stats_dict["r"], results_mode, results_sig_figs)}
+    R²            = {display_value(stats_dict["r2"], 'Decimal', 6)}
+    p(pendiente)  = {format_number(stats_dict["p_value"], 'Científica', results_sig_figs)}
     SSE           = {format_number(stats_dict["sse"], results_mode, results_sig_figs)}
     MSE           = {format_number(stats_dict["mse"], results_mode, results_sig_figs)}
     RMSE          = {format_number(stats_dict["rmse"], results_mode, results_sig_figs)}
-    F             = {format_number(stats_dict["f_stat"], results_mode, results_sig_figs)}
+    F             = {display_value(stats_dict["f_stat"], results_mode, results_sig_figs)}
+
+Nota sobre R²:
+    {stats_dict['r2_note']}
 
 Interpretación breve:
 {wrapped_interpretation}
 """.strip()
+
 
 
 def create_pdf_bytes(
@@ -642,6 +835,7 @@ def create_pdf_bytes(
             y_axis_sig_figs,
             results_mode,
             results_sig_figs,
+            intercept_fixed=stats_dict.get("intercept_fixed", False),
         )
         pdf.savefig(fig1, bbox_inches="tight")
         plt.close(fig1)
@@ -723,8 +917,9 @@ st.title("📈 Ajuste lineal de datos experimentales")
 st.write(
     "Esta aplicación realiza un ajuste lineal simple de datos experimentales, "
     "permite definir qué variable se coloca en cada eje, mostrar formatos "
-    "numéricos distintos para el eje X y el eje Y, interpretar el significado "
-    "físico de los parámetros y generar un reporte en PDF."
+    "numéricos distintos para el eje X y el eje Y, elegir si la ordenada al origen "
+    "se estima libremente o se fija en cero o en cualquier otro valor, interpretar "
+    "el significado físico de los parámetros y generar un reporte en PDF."
 )
 
 with st.expander("Instrucciones de uso", expanded=True):
@@ -733,11 +928,12 @@ with st.expander("Instrucciones de uso", expanded=True):
 ### Pasos de uso
 1. Escriba el nombre de la variable independiente y, si lo desea, su unidad.
 2. Escriba el nombre de la variable dependiente y, si lo desea, su unidad.
-3. Pegue los datos en dos columnas o cargue un archivo CSV/TXT.
-4. Seleccione el formato de resultados y el formato específico para cada eje.
-5. Presione **Calcular ajuste**.
-6. Revise la ecuación ajustada, la gráfica, los residuales, el resumen estadístico y la interpretación física.
-7. Descargue el reporte PDF.
+3. Elija si la ordenada al origen será libre o fija. Si será fija, capture el valor deseado.
+4. Pegue los datos en dos columnas o cargue un archivo CSV/TXT.
+5. Seleccione el formato de resultados y el formato específico para cada eje.
+6. Presione **Calcular ajuste**.
+7. Revise la ecuación ajustada, la gráfica, los residuales, el resumen estadístico y la interpretación física.
+8. Descargue el reporte PDF.
 
 ### Formatos válidos para ingresar datos
 - Separados por coma: `1, 2.1`
@@ -748,6 +944,7 @@ with st.expander("Instrucciones de uso", expanded=True):
 ### Recomendaciones
 - Use al menos 3 puntos experimentales.
 - Verifique que una relación lineal tenga sentido físico para el sistema estudiado.
+- Si fija la ordenada al origen, hágalo solo cuando exista una justificación experimental o teórica.
 - Revise la gráfica de residuales para identificar posibles desviaciones del comportamiento lineal.
         """
     )
@@ -775,6 +972,27 @@ with v1:
 with v2:
     y_name = st.text_input("Nombre de la variable del eje Y", value="y")
     y_unit = st.text_input("Unidad de Y", value="")
+
+st.subheader("Configuración del modelo")
+mc1, mc2 = st.columns([1.5, 1])
+
+with mc1:
+    intercept_mode_label = st.radio(
+        "Tratamiento de la ordenada al origen",
+        options=["Libre (estimarla con los datos)", "Fija"],
+        horizontal=True,
+    )
+
+with mc2:
+    fixed_intercept_value = st.number_input(
+        "Valor fijo de la ordenada al origen",
+        value=0.0,
+        format="%.10g",
+        disabled=intercept_mode_label != "Fija",
+        help="Puede fijarla en 0 o en cualquier otro valor físicamente justificado.",
+    )
+
+intercept_mode = "fija" if intercept_mode_label == "Fija" else "libre"
 
 st.subheader("Formato numérico")
 
@@ -873,6 +1091,7 @@ with col2:
 - **Eje X:** {axis_label(x_name, x_unit)} — {x_axis_mode}, {x_axis_sig_figs} cifras
 - **Eje Y:** {axis_label(y_name, y_unit)} — {y_axis_mode}, {y_axis_sig_figs} cifras
 - **Resultados:** {results_mode}, {results_sig_figs} cifras
+- **Modelo:** {('Intersección fija en ' + format_number(fixed_intercept_value, results_mode, results_sig_figs)) if intercept_mode == 'fija' else 'Intersección libre'}
 - **Unidades de la pendiente:** {slope_units(x_unit, y_unit)}
         """
     )
@@ -896,7 +1115,11 @@ if calcular:
         if len(df) < 3:
             raise ValueError("Se requieren al menos 3 puntos válidos.")
 
-        stats_dict = linear_regression_analysis(df)
+        stats_dict = linear_regression_analysis(
+            df,
+            intercept_mode=intercept_mode,
+            fixed_intercept=fixed_intercept_value,
+        )
         pdf_bytes = create_pdf_bytes(
             df,
             stats_dict,
@@ -964,6 +1187,8 @@ if st.session_state.df_data is not None and st.session_state.stats_dict is not N
         use_container_width=True,
     )
 
+    st.info(f"Modelo calculado: {model_description(stats_dict, results_mode, results_sig_figs)}")
+
     m1, m2, m3, m4, m5 = st.columns(5)
     m1.metric("Pendiente", format_number(stats_dict["slope"], results_mode, results_sig_figs))
     m2.metric(
@@ -976,9 +1201,9 @@ if st.session_state.df_data is not None and st.session_state.stats_dict is not N
     )
     m4.metric(
         "Error de intersección",
-        format_number(stats_dict["intercept_stderr"], results_mode, results_sig_figs),
+        display_value(stats_dict["intercept_stderr"], results_mode, results_sig_figs),
     )
-    m5.metric("R²", format_number(stats_dict["r2"], "Decimal", 6))
+    m5.metric("R²", display_value(stats_dict["r2"], "Decimal", 6))
 
     g1, g2 = st.columns(2)
 
@@ -1000,6 +1225,7 @@ if st.session_state.df_data is not None and st.session_state.stats_dict is not N
             y_axis_sig_figs,
             results_mode,
             results_sig_figs,
+            intercept_fixed=stats_dict.get("intercept_fixed", False),
         )
         st.pyplot(fig_main)
         plt.close(fig_main)
@@ -1018,6 +1244,7 @@ if st.session_state.df_data is not None and st.session_state.stats_dict is not N
     summary_df = pd.DataFrame(
         {
             "Parámetro": [
+                "Configuración del modelo",
                 "n",
                 "Pendiente",
                 "Intersección",
@@ -1036,26 +1263,38 @@ if st.session_state.df_data is not None and st.session_state.stats_dict is not N
                 "p(pendiente)",
             ],
             "Valor": [
+                model_description(stats_dict, results_mode, results_sig_figs),
                 format_number(stats_dict["n"], results_mode, results_sig_figs),
                 format_number(stats_dict["slope"], results_mode, results_sig_figs),
                 format_number(stats_dict["intercept"], results_mode, results_sig_figs),
-                format_number(stats_dict["r"], results_mode, results_sig_figs),
-                format_number(stats_dict["r2"], "Decimal", 6),
+                display_value(stats_dict["r"], results_mode, results_sig_figs),
+                display_value(stats_dict["r2"], "Decimal", 6),
                 format_number(stats_dict["slope_stderr"], results_mode, results_sig_figs),
-                format_number(stats_dict["intercept_stderr"], results_mode, results_sig_figs),
+                display_value(stats_dict["intercept_stderr"], results_mode, results_sig_figs),
                 format_number(stats_dict["slope_ci"][0], results_mode, results_sig_figs),
                 format_number(stats_dict["slope_ci"][1], results_mode, results_sig_figs),
-                format_number(stats_dict["intercept_ci"][0], results_mode, results_sig_figs),
-                format_number(stats_dict["intercept_ci"][1], results_mode, results_sig_figs),
+                display_value(
+                    None if stats_dict["intercept_ci"] is None else stats_dict["intercept_ci"][0],
+                    results_mode,
+                    results_sig_figs,
+                ),
+                display_value(
+                    None if stats_dict["intercept_ci"] is None else stats_dict["intercept_ci"][1],
+                    results_mode,
+                    results_sig_figs,
+                ),
                 format_number(stats_dict["sse"], results_mode, results_sig_figs),
                 format_number(stats_dict["mse"], results_mode, results_sig_figs),
                 format_number(stats_dict["rmse"], results_mode, results_sig_figs),
-                format_number(stats_dict["f_stat"], results_mode, results_sig_figs),
+                display_value(stats_dict["f_stat"], results_mode, results_sig_figs),
                 format_number(stats_dict["p_value"], "Científica", results_sig_figs),
             ],
         }
     )
     st.dataframe(summary_df, use_container_width=True)
+
+    if stats_dict.get("intercept_fixed", False):
+        st.caption(stats_dict["r2_note"])
 
     st.subheader("Interpretación física de los resultados")
     with st.expander("Ver interpretación", expanded=True):
