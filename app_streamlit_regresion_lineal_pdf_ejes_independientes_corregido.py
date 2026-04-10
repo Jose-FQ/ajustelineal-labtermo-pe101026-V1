@@ -34,7 +34,7 @@ st.set_page_config(page_title="Ajuste lineal con PDF", page_icon="📈", layout=
 # =========================
 
 def render_header() -> None:
-    col1, col2, col3 = st.columns([1.0, 2.8, 0.95])
+    col1, col2, col3 = st.columns([0.50, 2.8, 0.50])
 
     with col1:
         if UNAM_LOGO_PATH.exists():
