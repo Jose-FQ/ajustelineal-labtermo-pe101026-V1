@@ -946,7 +946,7 @@ with st.expander("Instrucciones de uso", expanded=True):
 - Verifique que una relación lineal tenga sentido físico para el sistema estudiado.
 - Si fija la ordenada al origen, hágalo solo cuando exista una justificación experimental o teórica.
 - Revise la gráfica de residuales para identificar posibles desviaciones del comportamiento lineal.
-- Para indicar los ejes puede usar el formato LaTeX por ejemplo $\Delta T$ = `$\Delta T$`
+- Para etiquetar los ejes, puede emplear formato LaTeX. Por ejemplo: $\Delta T$ debe escribirse como $\Delta T$; $\ln\left(\frac{P}{P_o}\right)$, como $\ln \left( \frac{P}{P_o} \right)$; y $c_{\text{metal}}$, como $c_{\text{metal}}$
         """
     )
 
