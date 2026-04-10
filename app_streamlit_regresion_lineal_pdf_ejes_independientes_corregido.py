@@ -1324,6 +1324,7 @@ st.divider()
 st.caption(
     "Estimado usuario o estimada usuaria: si considera que alguna parte de la aplicación "
     "puede mejorarse, por favor hágamelo saber al correo jllopezcervantes@quimica.unam.mx. "
-    "Haremos todo lo posible por atender sus comentarios y mejorarla. "
-    "Atentamente, José Luis López Cervantes."
+    "Haremos todo lo posible por atender sus comentarios y mejorarla. "  
+    "Atentamente,  
+    José Luis López Cervantes."
 )
